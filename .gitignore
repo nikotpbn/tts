@@ -1,0 +1,31 @@
+Plaintext
+# Environments
+# Environments
+venv/
+venv/
+__pycache__/
+__pycache__/
+*.pyc
+*.pyc
+
+
+# Data
+# Data
+data/raw/
+data/raw/
+data/processed/
+data/processed/
+
+
+# Models & Weights
+# Models & Weights
+models/
+models/
+
+
+# OS generated files
+# OS generated files
+.DS_Store
+.DS_Store
+Thumbs.db
+Thumbs.db

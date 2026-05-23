@@ -1,5 +1,7 @@
 Plaintext
 # Environments
+.env
+
 # Environments
 venv/
 venv/

@@ -2,12 +2,8 @@ import os
 from trainer import Trainer, TrainerArgs
 from TTS.config.shared_configs import BaseDatasetConfig
 from TTS.tts.datasets import load_tts_samples
-from TTS.tts.layers.xtts.trainer.gpt_trainer import (
-    GPTArgs,
-    GPTTrainer,
-    GPTTrainerConfig,
-    XttsAudioConfig,
-)
+from TTS.tts.layers.xtts.trainer.gpt_trainer import GPTArgs, GPTTrainer, GPTTrainerConfig
+from TTS.tts.models.xtts import XttsAudioConfig
 from TTS.utils.manage import ModelManager
 
 # 1. Define Output Paths
@@ -31,11 +27,12 @@ mel_norm_link = "https://coqui.gateway.scarf.sh/hf-coqui/XTTS-v2/main/mel_stats.
 tokenizer_link = "https://coqui.gateway.scarf.sh/hf-coqui/XTTS-v2/main/vocab.json"
 xtts_link = "https://coqui.gateway.scarf.sh/hf-coqui/XTTS-v2/main/model.pth"
 
-ModelManager._download_model_files(
-    [dvae_link, mel_norm_link, tokenizer_link, xtts_link],
-    CHECKPOINTS_OUT_PATH,
-    progress_bar=True,
-)
+if not os.path.exists(os.path.join(CHECKPOINTS_OUT_PATH, "model.pth")):
+    ModelManager._download_model_files(
+        [dvae_link, mel_norm_link, tokenizer_link, xtts_link], 
+        CHECKPOINTS_OUT_PATH, 
+        progress_bar=True
+    )
 
 # 4. Model Architecture & Audio Configuration
 model_args = GPTArgs(
@@ -51,7 +48,6 @@ model_args = GPTArgs(
     gpt_start_audio_token=1024,
     gpt_stop_audio_token=1025,
     gpt_use_masking_gt_prompt_approach=True,
-    gpt_use_mic=False,
 )
 
 audio_config = XttsAudioConfig(
@@ -68,12 +64,13 @@ config = GPTTrainerConfig(
     audio=audio_config,
     batch_size=2,  # Kept low to prevent out-of-memory errors on 16GB VRAM
     eval_batch_size=2,
-    num_loader_workers=4,
+    num_loader_workers=0,
     epochs=100,
     print_step=50,
     save_step=1000,
     save_n_checkpoints=2,
     optimizer="AdamW",
+    optimizer_params={"betas": [0.9, 0.96], "eps": 1e-8, "weight_decay": 1e-2},
     lr=5e-06,
     lr_scheduler="MultiStepLR",
     lr_scheduler_params={

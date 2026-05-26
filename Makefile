@@ -89,3 +89,10 @@ clean:
 	@echo ">>> Cleaning processed data for character: $(CHARACTER)"
 	@read -p "Are you sure? This deletes data/processed/$(CHARACTER)/ [y/N]: " confirm && \
 	[ "$$confirm" = "y" ] && rm -rf data/processed/$(CHARACTER) || echo "Aborted."
+
+# ---------------------------------------------------------------------------
+# Download VOD for manual clipping
+# ---------------------------------------------------------------------------
+download:
+	@echo ">>> Downloading VOD for character: $(CHARACTER)"
+	python scripts/download_vod.py --character $(CHARACTER) --url $(URL)

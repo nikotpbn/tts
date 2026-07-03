@@ -18,6 +18,8 @@
 CHARACTER ?= thrall
 MAX       ?= 50
 WHISPER   ?= large-v2
+EPOCHS      ?= 100
+BATCH_SIZE  ?= 2
 
 .PHONY: help install scrape transform upload dataset clean
 

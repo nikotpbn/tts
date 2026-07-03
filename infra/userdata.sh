@@ -83,8 +83,33 @@ notify() {
         --region "$AWS_REGION" || true
 }
 
+# ---------------------------------------------------------------------------
+# Spot interruption detector (background)
+# Polls instance metadata every 5s for AWS termination notice
+# ---------------------------------------------------------------------------
+
+(
+    while true; do
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            http://169.254.169.254/latest/meta-data/spot/termination-time)
+        if [ "$HTTP_CODE" -eq 200 ]; then
+            echo "[WARNING] Spot interruption notice received. Instance will terminate in ~2 minutes."
+            notify \
+                "TTS Training INTERRUPTED — $CHARACTER" \
+                "Spot instance was reclaimed by AWS.\nCharacter: $CHARACTER\nRun ID: $RUN_ID\nTraining did not complete.\nCheck CloudWatch: $CLOUDWATCH_LOG_GROUP/$CHARACTER/$RUN_ID"
+            break
+        fi
+        sleep 5
+    done
+) &
+SPOT_MONITOR_PID=$!
+
+# ---------------------------------------------------------------------------
 # Trap errors — notify and terminate on failure
+# ---------------------------------------------------------------------------
+
 trap '{
+    kill $SPOT_MONITOR_PID 2>/dev/null || true
     notify \
         "TTS Training FAILED — $CHARACTER" \
         "Training failed for character: $CHARACTER\nRun ID: $RUN_ID\nCheck CloudWatch: $CLOUDWATCH_LOG_GROUP/$CHARACTER/$RUN_ID"
@@ -139,6 +164,8 @@ python -u scripts/train_xtts.py \
 # ---------------------------------------------------------------------------
 # 5. Notify success and terminate
 # ---------------------------------------------------------------------------
+
+kill $SPOT_MONITOR_PID 2>/dev/null || true
 
 echo "[5/5] Training complete."
 notify \

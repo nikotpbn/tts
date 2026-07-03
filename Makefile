@@ -96,3 +96,11 @@ clean:
 download:
 	@echo ">>> Downloading VOD for character: $(CHARACTER)"
 	python scripts/download_vod.py --character $(CHARACTER) --url $(URL)
+
+# ---------------------------------------------------------------------------
+# Complete training pipeline (sync dataset + launch training - requires AWS credentials)
+# ---------------------------------------------------------------------------
+train:
+	@echo ">>> Syncing dataset and launching training for: $(CHARACTER)"
+	python scripts/upload.py --character $(CHARACTER)
+	python scripts/launch_training.py --character $(CHARACTER) --epochs $(EPOCHS) --batch-size $(BATCH_SIZE)

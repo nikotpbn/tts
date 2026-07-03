@@ -1,73 +1,114 @@
 #!/bin/bash
 # =============================================================================
-# userdata.sh — EC2 instance bootstrap script for XTTS training
+# userdata.sh — EC2 instance bootstrap script for XTTS training.
 #
-# Designed for: Deep Learning Base AMI with Single CUDA (Ubuntu 24.04)
-# Instance:     g4dn.xlarge (Tesla T4)
+# This script is loaded and templated by launch_training.py at launch time.
+# Placeholders ({{VAR}}) are substituted before being passed to EC2.
 #
-# This script runs automatically on instance launch via EC2 User Data.
-# It assumes the custom TTS AMI is used — all dependencies are pre-installed.
-# It only pulls code, downloads the dataset, and launches training.
-#
-# Required EC2 launch parameters (pass as environment via user data or SSM):
-#   CHARACTER   — character name matching S3 dataset path (e.g. thrall)
-#   S3_BUCKET   — S3 bucket name (e.g. amzn-s3-voices-dataset)
-#   GITHUB_REPO — GitHub repo URL (e.g. https://github.com/nikotpbn/tts.git)
-#
-# Usage (override defaults below or pass via launch template):
+# Do NOT run this script directly — use: make train CHARACTER=<character>
 # =============================================================================
 
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Configuration — override these at launch via EC2 user data
+# Configuration (injected by launch_training.py)
 # ---------------------------------------------------------------------------
 
-CHARACTER="${CHARACTER:-thrall}"
-S3_BUCKET="${S3_BUCKET:-amzn-s3-voices-dataset}"
-GITHUB_REPO="${GITHUB_REPO:-https://github.com/nikotpbn/tts.git}"
-EPOCHS="${EPOCHS:-100}"
-BATCH_SIZE="${BATCH_SIZE:-2}"
+CHARACTER="{{CHARACTER}}"
+EPOCHS="{{EPOCHS}}"
+BATCH_SIZE="{{BATCH_SIZE}}"
+S3_BUCKET="{{S3_BUCKET}}"
+GITHUB_REPO="{{GITHUB_REPO}}"
+SNS_TOPIC_ARN="{{SNS_TOPIC_ARN}}"
+CLOUDWATCH_LOG_GROUP="{{CLOUDWATCH_LOG_GROUP}}"
+AWS_REGION="{{AWS_DEFAULT_REGION}}"
 
 PROJECT_DIR="/home/ubuntu/tts"
 VENV_DIR="/home/ubuntu/venv"
 LOG_FILE="/home/ubuntu/bootstrap.log"
+RUN_ID="$(date -u +%Y-%m-%d_%H-%M-%S)"
 
 # ---------------------------------------------------------------------------
-# Logging
+# CloudWatch log streaming
 # ---------------------------------------------------------------------------
 
+apt-get install -y amazon-cloudwatch-agent 2>/dev/null || true
+
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << CWCONFIG
+{
+    "logs": {
+        "logs_collected": {
+            "files": {
+                "collect_list": [
+                    {
+                        "file_path": "/home/ubuntu/bootstrap.log",
+                        "log_group_name": "$CLOUDWATCH_LOG_GROUP",
+                        "log_stream_name": "$CHARACTER/$RUN_ID",
+                        "timezone": "UTC"
+                    }
+                ]
+            }
+        }
+    }
+}
+CWCONFIG
+
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config -m ec2 \
+    -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s 2>/dev/null || true
+
+# All output streamed to bootstrap.log -> CloudWatch
 exec > >(tee -a "$LOG_FILE") 2>&1
+
 echo "=============================================="
 echo "TTS Training Bootstrap"
 echo "Started: $(date -u)"
 echo "Character: $CHARACTER"
-echo "S3 Bucket: $S3_BUCKET"
+echo "Run ID: $RUN_ID"
+echo "Epochs: $EPOCHS"
+echo "Batch size: $BATCH_SIZE"
 echo "=============================================="
+
+# ---------------------------------------------------------------------------
+# SNS notification helper
+# ---------------------------------------------------------------------------
+
+notify() {
+    local subject="$1"
+    local message="$2"
+    aws sns publish \
+        --topic-arn "$SNS_TOPIC_ARN" \
+        --subject "$subject" \
+        --message "$message" \
+        --region "$AWS_REGION" || true
+}
+
+# Trap errors — notify and terminate on failure
+trap '{
+    notify \
+        "TTS Training FAILED — $CHARACTER" \
+        "Training failed for character: $CHARACTER\nRun ID: $RUN_ID\nCheck CloudWatch: $CLOUDWATCH_LOG_GROUP/$CHARACTER/$RUN_ID"
+    shutdown -h now
+}' ERR
 
 # ---------------------------------------------------------------------------
 # 1. Pull latest code from GitHub
 # ---------------------------------------------------------------------------
 
-echo "[1/5] Pulling latest code from GitHub..."
-
+echo "[1/5] Pulling latest code..."
 if [ -d "$PROJECT_DIR" ]; then
-    cd "$PROJECT_DIR"
-    git pull
+    cd "$PROJECT_DIR" && git pull
 else
     git clone "$GITHUB_REPO" "$PROJECT_DIR"
 fi
 
-cd "$PROJECT_DIR"
-
 # ---------------------------------------------------------------------------
-# 2. Activate venv (pre-installed in AMI)
+# 2. Activate venv and apply known patches
 # ---------------------------------------------------------------------------
 
 echo "[2/5] Activating virtual environment..."
 source "$VENV_DIR/bin/activate"
 
-# Apply known TTS patch (idempotent)
 sed -i 's/config.audio.dvae_sample_rate/config.audio.sample_rate/g' \
     "$VENV_DIR/lib/python3.11/site-packages/TTS/tts/layers/xtts/trainer/gpt_trainer.py" \
     2>/dev/null || true
@@ -77,38 +118,32 @@ sed -i 's/config.audio.dvae_sample_rate/config.audio.sample_rate/g' \
 # ---------------------------------------------------------------------------
 
 echo "[3/5] Downloading dataset from S3..."
-
 mkdir -p "$PROJECT_DIR/data/processed/$CHARACTER"
-
-aws s3 cp \
+aws s3 sync \
     "s3://$S3_BUCKET/characters/$CHARACTER/processed/" \
-    "$PROJECT_DIR/data/processed/$CHARACTER/" \
-    --recursive
-
-echo "Dataset downloaded."
+    "$PROJECT_DIR/data/processed/$CHARACTER/"
 
 # ---------------------------------------------------------------------------
-# 4. Launch training inside tmux
+# 4. Run training
 # ---------------------------------------------------------------------------
 
-echo "[4/5] Launching training..."
-
-tmux new-session -d -s train \
-    "source $VENV_DIR/bin/activate && \
-     cd $PROJECT_DIR && \
-     python -u scripts/train_xtts.py \
-         --character $CHARACTER \
-         --epochs $EPOCHS \
-         --batch-size $BATCH_SIZE \
-         --s3-bucket $S3_BUCKET \
-     2>&1 | tee scripts/training.log"
-
-echo "Training launched in tmux session 'train'."
-echo "Attach with: tmux attach -t train"
+echo "[4/5] Starting training..."
+cd "$PROJECT_DIR"
+python -u scripts/train_xtts.py \
+    --character "$CHARACTER" \
+    --epochs "$EPOCHS" \
+    --batch-size "$BATCH_SIZE" \
+    --s3-bucket "$S3_BUCKET" \
+    2>&1 | tee scripts/training.log
 
 # ---------------------------------------------------------------------------
-# 5. Done
+# 5. Notify success and terminate
 # ---------------------------------------------------------------------------
 
-echo "[5/5] Bootstrap complete: $(date -u)"
-echo "Monitor training: tail -f $PROJECT_DIR/scripts/training.log"
+echo "[5/5] Training complete."
+notify \
+    "TTS Training Complete — $CHARACTER" \
+    "Training finished for character: $CHARACTER\nRun ID: $RUN_ID\nModel saved to: s3://$S3_BUCKET/characters/$CHARACTER/models/\nCloudWatch logs: $CLOUDWATCH_LOG_GROUP/$CHARACTER/$RUN_ID"
+
+echo "Shutting down instance..."
+shutdown -h now

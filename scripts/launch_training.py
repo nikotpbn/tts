@@ -119,7 +119,6 @@ def launch(character: str, epochs: int, batch_size: int, logger: logging.Logger)
         "S3_BUCKET",
         "AMI_ID",
         "INSTANCE_TYPE",
-        "SUBNET_ID",
         "SECURITY_GROUP_ID",
         "INSTANCE_PROFILE_ARN",
         "SPOT_MAX_PRICE",
@@ -165,7 +164,6 @@ def launch(character: str, epochs: int, batch_size: int, logger: logging.Logger)
             MinCount=1,
             MaxCount=1,
             UserData=userdata_b64,
-            SubnetId=env["SUBNET_ID"],
             SecurityGroupIds=[env["SECURITY_GROUP_ID"]],
             IamInstanceProfile={"Arn": env["INSTANCE_PROFILE_ARN"]},
             InstanceMarketOptions={

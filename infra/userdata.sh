@@ -167,8 +167,7 @@ mkdir -p "$PROJECT_DIR/data/processed/$CHARACTER"
 
 aws s3 sync \
     "s3://$S3_BUCKET/characters/$CHARACTER/processed/" \
-    "$PROJECT_DIR/data/processed/$CHARACTER/" \
-    --debug 2>&1 | head -200
+    "$PROJECT_DIR/data/processed/$CHARACTER/"
 
 echo "[3/5] Download complete."
 

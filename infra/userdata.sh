@@ -30,7 +30,6 @@ RUN_ID="$(date -u +%Y-%m-%d_%H-%M-%S)"
 
 # ---------------------------------------------------------------------------
 # Start logging to file immediately — before anything else
-# This ensures we capture all output even if CloudWatch setup fails
 # ---------------------------------------------------------------------------
 
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -93,8 +92,6 @@ notify() {
 
 # ---------------------------------------------------------------------------
 # Spot interruption detector (background)
-# Polls instance metadata every 5s for AWS termination notice.
-# Reports action reason: terminate | stop | hibernate
 # ---------------------------------------------------------------------------
 
 (
@@ -111,7 +108,7 @@ notify() {
             echo "[WARNING] Spot interruption notice received. Action: $REASON"
             notify \
                 "TTS Training INTERRUPTED — $CHARACTER" \
-                "Spot instance reclaimed by AWS.\nAction: $REASON\nCharacter: $CHARACTER\nRun ID: $RUN_ID\nTraining did not complete.\nCheck CloudWatch: $CLOUDWATCH_LOG_GROUP/$CHARACTER/$RUN_ID"
+                "Spot instance reclaimed by AWS.\nAction: $REASON\nCharacter: $CHARACTER\nRun ID: $RUN_ID\nCheck CloudWatch: $CLOUDWATCH_LOG_GROUP/$CHARACTER/$RUN_ID"
             break
         fi
         sleep 5
@@ -124,6 +121,7 @@ SPOT_MONITOR_PID=$!
 # ---------------------------------------------------------------------------
 
 trap '{
+    echo "[ERROR] Bootstrap failed at line $LINENO"
     kill $SPOT_MONITOR_PID 2>/dev/null || true
     notify \
         "TTS Training FAILED — $CHARACTER" \
@@ -141,6 +139,7 @@ if [ -d "$PROJECT_DIR" ]; then
 else
     git clone "$GITHUB_REPO" "$PROJECT_DIR"
 fi
+echo "[1/5] Code ready."
 
 # ---------------------------------------------------------------------------
 # 2. Activate venv and apply known patches
@@ -153,15 +152,25 @@ sed -i 's/config.audio.dvae_sample_rate/config.audio.sample_rate/g' \
     "$VENV_DIR/lib/python3.11/site-packages/TTS/tts/layers/xtts/trainer/gpt_trainer.py" \
     2>/dev/null || true
 
+echo "[2/5] Virtual environment ready."
+
 # ---------------------------------------------------------------------------
 # 3. Download dataset from S3
 # ---------------------------------------------------------------------------
 
 echo "[3/5] Downloading dataset from S3..."
+echo "[3/5] Bucket: $S3_BUCKET"
+echo "[3/5] Source: s3://$S3_BUCKET/characters/$CHARACTER/processed/"
+echo "[3/5] Dest:   $PROJECT_DIR/data/processed/$CHARACTER/"
+
 mkdir -p "$PROJECT_DIR/data/processed/$CHARACTER"
+
 aws s3 sync \
     "s3://$S3_BUCKET/characters/$CHARACTER/processed/" \
-    "$PROJECT_DIR/data/processed/$CHARACTER/"
+    "$PROJECT_DIR/data/processed/$CHARACTER/" \
+    --debug 2>&1 | head -200
+
+echo "[3/5] Download complete."
 
 # ---------------------------------------------------------------------------
 # 4. Run training

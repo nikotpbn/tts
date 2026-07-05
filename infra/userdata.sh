@@ -85,18 +85,25 @@ notify() {
 
 # ---------------------------------------------------------------------------
 # Spot interruption detector (background)
-# Polls instance metadata every 5s for AWS termination notice
+# Polls instance metadata every 5s for AWS termination notice.
+# Reports action reason: terminate | stop | hibernate
 # ---------------------------------------------------------------------------
 
 (
     while true; do
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            http://169.254.169.254/latest/meta-data/spot/termination-time)
+        RESPONSE=$(curl -s -w "\n%{http_code}" \
+            http://169.254.169.254/latest/meta-data/spot/interruption-notice 2>/dev/null)
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY=$(echo "$RESPONSE" | head -1)
+
         if [ "$HTTP_CODE" -eq 200 ]; then
-            echo "[WARNING] Spot interruption notice received. Instance will terminate in ~2 minutes."
+            REASON=$(echo "$BODY" | python3 -c \
+                "import sys,json; d=json.load(sys.stdin); print(d.get('action', 'unknown'))" \
+                2>/dev/null || echo "unknown")
+            echo "[WARNING] Spot interruption notice received. Action: $REASON"
             notify \
                 "TTS Training INTERRUPTED — $CHARACTER" \
-                "Spot instance was reclaimed by AWS.\nCharacter: $CHARACTER\nRun ID: $RUN_ID\nTraining did not complete.\nCheck CloudWatch: $CLOUDWATCH_LOG_GROUP/$CHARACTER/$RUN_ID"
+                "Spot instance reclaimed by AWS.\nAction: $REASON\nCharacter: $CHARACTER\nRun ID: $RUN_ID\nTraining did not complete.\nCheck CloudWatch: $CLOUDWATCH_LOG_GROUP/$CHARACTER/$RUN_ID"
             break
         fi
         sleep 5

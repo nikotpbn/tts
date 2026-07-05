@@ -162,6 +162,8 @@ echo "[3/5] Downloading dataset from S3..."
 echo "[3/5] Bucket: $S3_BUCKET"
 echo "[3/5] Source: s3://$S3_BUCKET/characters/$CHARACTER/processed/"
 echo "[3/5] Dest:   $PROJECT_DIR/data/processed/$CHARACTER/"
+echo "[3/5] AWS CLI version: $(aws --version 2>&1)"
+echo "[3/5] AWS identity: $(aws sts get-caller-identity 2>&1)"
 
 mkdir -p "$PROJECT_DIR/data/processed/$CHARACTER"
 

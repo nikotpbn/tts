@@ -29,12 +29,29 @@ LOG_FILE="/home/ubuntu/bootstrap.log"
 RUN_ID="$(date -u +%Y-%m-%d_%H-%M-%S)"
 
 # ---------------------------------------------------------------------------
-# CloudWatch log streaming
+# Start logging to file immediately — before anything else
+# This ensures we capture all output even if CloudWatch setup fails
 # ---------------------------------------------------------------------------
 
-apt-get install -y amazon-cloudwatch-agent 2>/dev/null || true
+exec > >(tee -a "$LOG_FILE") 2>&1
 
-cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << CWCONFIG
+echo "=============================================="
+echo "TTS Training Bootstrap"
+echo "Started: $(date -u)"
+echo "Character: $CHARACTER"
+echo "Run ID: $RUN_ID"
+echo "Epochs: $EPOCHS"
+echo "Batch size: $BATCH_SIZE"
+echo "=============================================="
+
+# ---------------------------------------------------------------------------
+# CloudWatch log streaming (best effort — never kills the script)
+# ---------------------------------------------------------------------------
+
+echo "[CW] Installing CloudWatch agent..."
+apt-get install -y amazon-cloudwatch-agent 2>/dev/null || echo "[CW] Agent install failed, continuing..."
+
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << CWCONFIG || true
 {
     "logs": {
         "logs_collected": {
@@ -55,19 +72,10 @@ CWCONFIG
 
 /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
     -a fetch-config -m ec2 \
-    -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s 2>/dev/null || true
+    -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s \
+    2>/dev/null || echo "[CW] Agent start failed, continuing without CloudWatch streaming..."
 
-# All output streamed to bootstrap.log -> CloudWatch
-exec > >(tee -a "$LOG_FILE") 2>&1
-
-echo "=============================================="
-echo "TTS Training Bootstrap"
-echo "Started: $(date -u)"
-echo "Character: $CHARACTER"
-echo "Run ID: $RUN_ID"
-echo "Epochs: $EPOCHS"
-echo "Batch size: $BATCH_SIZE"
-echo "=============================================="
+echo "[CW] CloudWatch setup complete."
 
 # ---------------------------------------------------------------------------
 # SNS notification helper

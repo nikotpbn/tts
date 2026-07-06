@@ -19,13 +19,13 @@ EPOCHS="{{EPOCHS}}"
 BATCH_SIZE="{{BATCH_SIZE}}"
 S3_BUCKET="{{S3_BUCKET}}"
 GITHUB_REPO="{{GITHUB_REPO}}"
-SNS_TOPIC_ARN="{{SNS_TOPIC_ARN}}"
 CLOUDWATCH_LOG_GROUP="{{CLOUDWATCH_LOG_GROUP}}"
 AWS_REGION="{{AWS_DEFAULT_REGION}}"
 
 PROJECT_DIR="/home/ubuntu/tts"
 VENV_DIR="/home/ubuntu/venv"
 LOG_FILE="/home/ubuntu/bootstrap.log"
+AWS="/usr/local/bin/aws"
 RUN_ID="$(date -u +%Y-%m-%d_%H-%M-%S)"
 
 # ---------------------------------------------------------------------------
@@ -77,20 +77,6 @@ CWCONFIG
 echo "[CW] CloudWatch setup complete."
 
 # ---------------------------------------------------------------------------
-# SNS notification helper
-# ---------------------------------------------------------------------------
-
-notify() {
-    local subject="$1"
-    local message="$2"
-    aws sns publish \
-        --topic-arn "$SNS_TOPIC_ARN" \
-        --subject "$subject" \
-        --message "$message" \
-        --region "$AWS_REGION" || true
-}
-
-# ---------------------------------------------------------------------------
 # Spot interruption detector (background)
 # ---------------------------------------------------------------------------
 
@@ -106,9 +92,6 @@ notify() {
                 "import sys,json; d=json.load(sys.stdin); print(d.get('action', 'unknown'))" \
                 2>/dev/null || echo "unknown")
             echo "[WARNING] Spot interruption notice received. Action: $REASON"
-            notify \
-                "TTS Training INTERRUPTED — $CHARACTER" \
-                "Spot instance reclaimed by AWS.\nAction: $REASON\nCharacter: $CHARACTER\nRun ID: $RUN_ID\nCheck CloudWatch: $CLOUDWATCH_LOG_GROUP/$CHARACTER/$RUN_ID"
             break
         fi
         sleep 5
@@ -117,15 +100,12 @@ notify() {
 SPOT_MONITOR_PID=$!
 
 # ---------------------------------------------------------------------------
-# Trap errors — notify and terminate on failure
+# Trap errors — log and terminate on failure
 # ---------------------------------------------------------------------------
 
 trap '{
     echo "[ERROR] Bootstrap failed at line $LINENO"
     kill $SPOT_MONITOR_PID 2>/dev/null || true
-    notify \
-        "TTS Training FAILED — $CHARACTER" \
-        "Training failed for character: $CHARACTER\nRun ID: $RUN_ID\nCheck CloudWatch: $CLOUDWATCH_LOG_GROUP/$CHARACTER/$RUN_ID"
     shutdown -h now
 }' ERR
 
@@ -162,12 +142,10 @@ echo "[3/5] Downloading dataset from S3..."
 echo "[3/5] Bucket: $S3_BUCKET"
 echo "[3/5] Source: s3://$S3_BUCKET/characters/$CHARACTER/processed/"
 echo "[3/5] Dest:   $PROJECT_DIR/data/processed/$CHARACTER/"
-echo "[3/5] AWS CLI: $(/usr/bin/aws --version 2>&1)"
-echo "[3/5] Identity: $(/usr/bin/aws sts get-caller-identity 2>&1)"
 
 mkdir -p "$PROJECT_DIR/data/processed/$CHARACTER"
 
-/usr/bin/aws s3 sync \
+$AWS s3 sync \
     "s3://$S3_BUCKET/characters/$CHARACTER/processed/" \
     "$PROJECT_DIR/data/processed/$CHARACTER/"
 
@@ -187,15 +165,16 @@ python -u scripts/train_xtts.py \
     2>&1 | tee scripts/training.log
 
 # ---------------------------------------------------------------------------
-# 5. Notify success and terminate
+# 5. Write status to S3 and terminate
 # ---------------------------------------------------------------------------
 
 kill $SPOT_MONITOR_PID 2>/dev/null || true
 
 echo "[5/5] Training complete."
-notify \
-    "TTS Training Complete — $CHARACTER" \
-    "Training finished for character: $CHARACTER\nRun ID: $RUN_ID\nModel saved to: s3://$S3_BUCKET/characters/$CHARACTER/models/\nCloudWatch logs: $CLOUDWATCH_LOG_GROUP/$CHARACTER/$RUN_ID"
+
+$AWS s3 cp - "s3://$S3_BUCKET/characters/$CHARACTER/training_status.json" << STATUSEOF
+{"status": "complete", "character": "$CHARACTER", "run_id": "$RUN_ID", "timestamp": "$(date -u)"}
+STATUSEOF
 
 echo "Shutting down instance..."
 shutdown -h now

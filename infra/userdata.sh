@@ -29,7 +29,7 @@ AWS="/usr/local/bin/aws"
 RUN_ID="$(date -u +%Y-%m-%d_%H-%M-%S)"
 
 # ---------------------------------------------------------------------------
-# Start logging to file immediately — before anything else
+# Start logging to file immediately
 # ---------------------------------------------------------------------------
 
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -47,7 +47,7 @@ echo "=============================================="
 # CloudWatch log streaming (best effort — never kills the script)
 # ---------------------------------------------------------------------------
 
-echo "[CW] Installing CloudWatch agent..."
+echo "[CW] Setting up CloudWatch agent..."
 apt-get install -y amazon-cloudwatch-agent 2>/dev/null || echo "[CW] Agent install failed, continuing..."
 
 cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << CWCONFIG || true
@@ -122,11 +122,14 @@ fi
 echo "[1/5] Code ready."
 
 # ---------------------------------------------------------------------------
-# 2. Activate venv and apply known patches
+# 2. Activate venv, install dependencies, apply patches
 # ---------------------------------------------------------------------------
 
 echo "[2/5] Activating virtual environment..."
 source "$VENV_DIR/bin/activate"
+
+echo "[2/5] Installing pipeline dependencies..."
+pip install boto3 soundfile python-dotenv --quiet
 
 sed -i 's/config.audio.dvae_sample_rate/config.audio.sample_rate/g' \
     "$VENV_DIR/lib/python3.11/site-packages/TTS/tts/layers/xtts/trainer/gpt_trainer.py" \
@@ -139,30 +142,32 @@ echo "[2/5] Virtual environment ready."
 # ---------------------------------------------------------------------------
 
 echo "[3/5] Downloading dataset from S3..."
-echo "[3/5] Bucket: $S3_BUCKET"
-echo "[3/5] Source: s3://$S3_BUCKET/characters/$CHARACTER/processed/"
-echo "[3/5] Dest:   $PROJECT_DIR/data/processed/$CHARACTER/"
-
 mkdir -p "$PROJECT_DIR/data/processed/$CHARACTER"
-
 $AWS s3 sync \
     "s3://$S3_BUCKET/characters/$CHARACTER/processed/" \
     "$PROJECT_DIR/data/processed/$CHARACTER/"
-
 echo "[3/5] Download complete."
 
 # ---------------------------------------------------------------------------
-# 4. Run training
+# 4. Run training inside tmux
 # ---------------------------------------------------------------------------
 
-echo "[4/5] Starting training..."
+echo "[4/5] Starting training in tmux session 'train'..."
 cd "$PROJECT_DIR"
-python -u scripts/train_xtts.py \
-    --character "$CHARACTER" \
-    --epochs "$EPOCHS" \
-    --batch-size "$BATCH_SIZE" \
-    --s3-bucket "$S3_BUCKET" \
-    2>&1 | tee scripts/training.log
+
+tmux new-session -d -s train \
+    "source $VENV_DIR/bin/activate && \
+     python -u scripts/train_xtts.py \
+         --character $CHARACTER \
+         --epochs $EPOCHS \
+         --batch-size $BATCH_SIZE \
+         --s3-bucket $S3_BUCKET \
+     2>&1 | tee scripts/training.log; \
+     tmux wait-for -S train"
+
+# Block until training session exits
+tmux wait-for train
+echo "[4/5] Training complete."
 
 # ---------------------------------------------------------------------------
 # 5. Write status to S3 and terminate
@@ -170,11 +175,9 @@ python -u scripts/train_xtts.py \
 
 kill $SPOT_MONITOR_PID 2>/dev/null || true
 
-echo "[5/5] Training complete."
-
-$AWS s3 cp - "s3://$S3_BUCKET/characters/$CHARACTER/training_status.json" << STATUSEOF
-{"status": "complete", "character": "$CHARACTER", "run_id": "$RUN_ID", "timestamp": "$(date -u)"}
-STATUSEOF
+echo "[5/5] Writing status to S3..."
+echo "{\"status\": \"complete\", \"character\": \"$CHARACTER\", \"run_id\": \"$RUN_ID\", \"timestamp\": \"$(date -u)\"}" | \
+    $AWS s3 cp - "s3://$S3_BUCKET/characters/$CHARACTER/training_status.json"
 
 echo "Shutting down instance..."
 shutdown -h now

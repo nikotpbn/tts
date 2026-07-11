@@ -129,7 +129,7 @@ echo "[2/5] Activating virtual environment..."
 source "$VENV_DIR/bin/activate"
 
 echo "[2/5] Installing pipeline dependencies..."
-pip install boto3 soundfile python-dotenv --quiet
+pip install -U pip && pip install boto3 soundfile python-dotenv --quiet
 
 sed -i 's/config.audio.dvae_sample_rate/config.audio.sample_rate/g' \
     "$VENV_DIR/lib/python3.11/site-packages/TTS/tts/layers/xtts/trainer/gpt_trainer.py" \

@@ -25,6 +25,7 @@ AWS_REGION="{{AWS_DEFAULT_REGION}}"
 PROJECT_DIR="/home/ubuntu/tts"
 VENV_DIR="/home/ubuntu/venv"
 LOG_FILE="/home/ubuntu/bootstrap.log"
+TRAINING_LOG="$PROJECT_DIR/scripts/training.log"
 AWS="/usr/local/bin/aws"
 RUN_ID="$(date -u +%Y-%m-%d_%H-%M-%S)"
 
@@ -45,6 +46,7 @@ echo "=============================================="
 
 # ---------------------------------------------------------------------------
 # CloudWatch log streaming (best effort — never kills the script)
+# Streams both bootstrap.log and training.log to separate log streams
 # ---------------------------------------------------------------------------
 
 echo "[CW] Setting up CloudWatch agent..."
@@ -57,9 +59,15 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << CWCON
             "files": {
                 "collect_list": [
                     {
-                        "file_path": "/home/ubuntu/bootstrap.log",
+                        "file_path": "$LOG_FILE",
                         "log_group_name": "$CLOUDWATCH_LOG_GROUP",
-                        "log_stream_name": "$CHARACTER/$RUN_ID",
+                        "log_stream_name": "$CHARACTER/$RUN_ID/bootstrap",
+                        "timezone": "UTC"
+                    },
+                    {
+                        "file_path": "$TRAINING_LOG",
+                        "log_group_name": "$CLOUDWATCH_LOG_GROUP",
+                        "log_stream_name": "$CHARACTER/$RUN_ID/training",
                         "timezone": "UTC"
                     }
                 ]
@@ -162,7 +170,7 @@ tmux new-session -d -s train \
          --epochs $EPOCHS \
          --batch-size $BATCH_SIZE \
          --s3-bucket $S3_BUCKET \
-     2>&1 | tee scripts/training.log; \
+     2>&1 | tee $TRAINING_LOG; \
      tmux wait-for -S train"
 
 # Block until training session exits

@@ -15,6 +15,7 @@ Notes:
 
 import os
 import wave
+import glob
 import argparse
 import boto3
 from datetime import datetime, timezone
@@ -23,7 +24,11 @@ import torch
 from trainer import Trainer, TrainerArgs
 from TTS.config.shared_configs import BaseDatasetConfig
 from TTS.tts.datasets import load_tts_samples
-from TTS.tts.layers.xtts.trainer.gpt_trainer import GPTArgs, GPTTrainer, GPTTrainerConfig
+from TTS.tts.layers.xtts.trainer.gpt_trainer import (
+    GPTArgs,
+    GPTTrainer,
+    GPTTrainerConfig,
+)
 from TTS.tts.models.xtts import XttsAudioConfig
 from TTS.utils.manage import ModelManager
 
@@ -31,18 +36,45 @@ from TTS.utils.manage import ModelManager
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="Fine-tune XTTS on a character dataset.")
-    parser.add_argument("--character", type=str, required=True, help="Character name (matches data/processed/<character>/)")
-    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs (default: 100)")
-    parser.add_argument("--batch-size", type=int, default=2, help="Batch size (default: 2)")
-    parser.add_argument("--run-id", type=str, default=None, help="Run identifier (default: current timestamp)")
-    parser.add_argument("--s3-bucket", type=str, default=None, help="S3 bucket for uploading trained model (optional)")
+    parser = argparse.ArgumentParser(
+        description="Fine-tune XTTS on a character dataset."
+    )
+    parser.add_argument(
+        "--character",
+        type=str,
+        required=True,
+        help="Character name (matches data/processed/<character>/)",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=100,
+        help="Number of training epochs (default: 100)",
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=2, help="Batch size (default: 2)"
+    )
+    parser.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Run identifier (default: current timestamp)",
+    )
+    parser.add_argument(
+        "--s3-bucket",
+        type=str,
+        default=None,
+        help="S3 bucket for uploading trained model (optional)",
+    )
     return parser.parse_args()
+
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
+
 
 def get_paths(character: str, run_id: str):
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -58,9 +90,11 @@ def get_paths(character: str, run_id: str):
 
     return data_path, meta_file, base_weights_path, run_output_path
 
+
 # ---------------------------------------------------------------------------
 # Pre-flight validation
 # ---------------------------------------------------------------------------
+
 
 def validate_wavs(samples: list, max_duration: float = 11.5) -> list:
     bad = []
@@ -81,32 +115,52 @@ def validate_wavs(samples: list, max_duration: float = 11.5) -> list:
             bad.append((path, str(e)))
     return bad
 
+
 # ---------------------------------------------------------------------------
 # S3 upload
 # ---------------------------------------------------------------------------
 
+
 def upload_model_to_s3(run_output_path: str, character: str, run_id: str, bucket: str):
-    print(f"> Uploading trained model to S3...")
+    print("> Uploading trained model to S3...")
     s3 = boto3.client("s3")
 
-    files_to_upload = ["best_model.pth", "config.json"]
+    # Trainer saves best_model_<step>.pth in a timestamped subdirectory
+    # Search recursively for the latest checkpoint
+    matches = glob.glob(
+        os.path.join(run_output_path, "**", "best_model_*.pth"), recursive=True
+    )
 
-    for filename in files_to_upload:
-        local_path = os.path.join(run_output_path, filename)
+    if not matches:
+        print(f"  [ERROR] No best_model checkpoint found in {run_output_path}")
+        return
+
+    best_model_path = sorted(matches)[-1]
+    checkpoint_dir = os.path.dirname(best_model_path)
+    print(f"  Found checkpoint: {best_model_path}")
+
+    # Upload best_model_*.pth as best_model.pth and config.json
+    files_to_upload = {
+        best_model_path: "best_model.pth",
+        os.path.join(checkpoint_dir, "config.json"): "config.json",
+    }
+
+    for local_path, s3_filename in files_to_upload.items():
         if not os.path.exists(local_path):
-            print(f"  [WARNING] {filename} not found, skipping.")
+            print(f"  [WARNING] {s3_filename} not found, skipping.")
             continue
-
-        s3_key = f"characters/{character}/models/{run_id}/{filename}"
+        s3_key = f"characters/{character}/models/{run_id}/{s3_filename}"
         try:
             s3.upload_file(local_path, bucket, s3_key)
-            print(f"  Uploaded: {filename} -> s3://{bucket}/{s3_key}")
+            print(f"  Uploaded: {s3_filename} -> s3://{bucket}/{s3_key}")
         except Exception as e:
-            print(f"  [ERROR] Failed to upload {filename}: {e}")
+            print(f"  [ERROR] Failed to upload {s3_filename}: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main():
     args = parse_args()
@@ -121,10 +175,14 @@ def main():
     torch.set_num_interop_threads(1)
 
     # 1. Resolve paths
-    data_path, meta_file, base_weights_path, run_output_path = get_paths(args.character, run_id)
+    data_path, meta_file, base_weights_path, run_output_path = get_paths(
+        args.character, run_id
+    )
 
     if not os.path.exists(data_path):
-        raise FileNotFoundError(f"Dataset not found: {data_path}\nRun transform.py and upload to S3 first.")
+        raise FileNotFoundError(
+            f"Dataset not found: {data_path}\nRun transform.py and upload to S3 first."
+        )
 
     if not os.path.exists(meta_file):
         raise FileNotFoundError(f"metadata.csv not found: {meta_file}")
@@ -146,7 +204,7 @@ def main():
         ModelManager._download_model_files(
             [dvae_link, mel_norm_link, tokenizer_link, xtts_link],
             base_weights_path,
-            progress_bar=True
+            progress_bar=True,
         )
     else:
         print("> Base model weights already present, skipping download.")
@@ -176,9 +234,7 @@ def main():
         gpt_use_masking_gt_prompt_approach=True,
     )
 
-    audio_config = XttsAudioConfig(
-        sample_rate=22050, output_sample_rate=24000
-    )
+    audio_config = XttsAudioConfig(sample_rate=22050, output_sample_rate=24000)
 
     # 5. Training config
     config = GPTTrainerConfig(
@@ -211,7 +267,9 @@ def main():
         config_dataset, eval_split=True, eval_split_size=0.1
     )
 
-    print(f"> Loaded {len(train_samples)} train samples, {len(eval_samples)} eval samples")
+    print(
+        f"> Loaded {len(train_samples)} train samples, {len(eval_samples)} eval samples"
+    )
 
     # 7. Pre-flight wav validation
     print("> Validating wav files...")
@@ -247,6 +305,7 @@ def main():
     else:
         print("> [WARNING] No S3 bucket specified. Skipping model upload.")
         print(">           Pass --s3-bucket or set S3_BUCKET environment variable.")
+
 
 if __name__ == "__main__":
     main()
